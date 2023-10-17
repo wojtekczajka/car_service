@@ -1,5 +1,6 @@
 import RPi.GPIO as GPIO
 import time
+import threading
 
 class DistanceSensor:
     def __init__(self):
@@ -9,10 +10,21 @@ class DistanceSensor:
         GPIO.setup(self.PIN_TRIGGER, GPIO.OUT)
         GPIO.setup(self.PIN_ECHO, GPIO.IN)
         GPIO.output(self.PIN_TRIGGER, GPIO.LOW)
-        print("Waiting for sensor to settle")
-        time.sleep(2)
+        self.distance = 0.0
+        self.lock = threading.Lock()
+        self.update_frequency = 3  # Updates n times per second
+        self.update_thread = threading.Thread(target=self._update_distance)
+        self.update_thread.daemon = True
+        self.update_thread.start()
 
-    def measure_distance(self):
+    def _update_distance(self):
+        while True:
+            distance = self._measure_distance()
+            with self.lock:
+                self.distance = distance
+            time.sleep(1 / self.update_frequency)
+
+    def _measure_distance(self):
         GPIO.output(self.PIN_TRIGGER, GPIO.HIGH)
         time.sleep(0.00001)
         GPIO.output(self.PIN_TRIGGER, GPIO.LOW)
@@ -26,16 +38,19 @@ class DistanceSensor:
         distance = round(pulse_duration * 17150, 2)
         return distance
 
+    def measure_distance(self):
+        with self.lock:
+            return self.distance
+
     def cleanup(self):
         GPIO.cleanup()
 
     def __del__(self):
         self.cleanup()
 
-
 # Usage:
 # sensor = DistanceSensor()
-# distance = sensor.measure_distance()
-# print(f"Distance: {distance} cm")
-# distance = sensor.measure_distance()
-# print(f"Distance: {distance} cm")
+# while True:
+#     distance = sensor.measure_distance()
+#     print(f"Distance: {distance} cm")
+#     time.sleep(1)
