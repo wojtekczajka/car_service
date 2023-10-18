@@ -12,7 +12,7 @@ class DistanceSensor:
         GPIO.output(self.PIN_TRIGGER, GPIO.LOW)
         self.distance = 0.0
         self.lock = threading.Lock()
-        self.update_frequency = 3  # Updates n times per second
+        self.update_frequency = 5  # Updates n times per second
         self.update_thread = threading.Thread(target=self._update_distance)
         self.update_thread.daemon = True
         self.update_thread.start()
