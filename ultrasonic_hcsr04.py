@@ -8,8 +8,11 @@ class DistanceSensor:
         self.PIN_TRIGGER = 4
         self.PIN_ECHO = 17
         GPIO.setup(self.PIN_TRIGGER, GPIO.OUT)
+        time.sleep(0.1)
         GPIO.setup(self.PIN_ECHO, GPIO.IN)
+        time.sleep(0.1)
         GPIO.output(self.PIN_TRIGGER, GPIO.LOW)
+        time.sleep(0.1)
         self.distance = 0.0
         self.lock = threading.Lock()
         self.update_frequency = 5  # Updates n times per second
