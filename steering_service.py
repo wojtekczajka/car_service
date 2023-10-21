@@ -1,50 +1,130 @@
-from fastapi import FastAPI, HTTPException, Response
+from adafruit_pca9685 import PCA9685
+from board import SCL, SDA
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+import busio
+import json
+
 from ultrasonic_hcsr04 import DistanceSensor
-import vehicle_steering
+from vehicle_control import VehicleControl
+from vehicle_steering import VehicleSteering
+
+import vehicle_config
 
 app = FastAPI()
 
+i2c_bus = busio.I2C(SCL, SDA)
+steering = VehicleSteering(VehicleControl(i2c_bus=i2c_bus,
+                                          steering_pwm_controller=PCA9685(i2c_bus, address=vehicle_config.I2C_STEERING_PWM_CONTROLLER_ADDRESS),
+                                          throttle_pwm_controller=PCA9685(i2c_bus, address=vehicle_config.I2C_THROTTLE_PWM_CONTROLLER_ADDRESS)))
+
+action_handlers = {
+    "start": (steering.start_vehicle, ()),
+    "stop": (steering.stop_vehicle, ()),
+    "turn_left": (steering.turn_vehicle_left, ("value",)),
+    "turn_right": (steering.turn_vehicle_right, ("value",)),
+    "center": (steering.center_steering, ()),
+    "drive_forward": (steering.drive_forward, ("value",)),
+    "drive_backward": (steering.drive_backward, ("value",)),
+    "set_speed_for_right_motor": (steering.set_speed_for_right_motor, ("value",)),
+    "set_speed_for_left_motor": (steering.set_speed_for_left_motor, ("value",)),
+}
+
+html = """
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Video Stream</title>
+    </head>
+    <body>
+        <h1>Video Stream</h1>
+        <img id="video" width="640" height="368" src="http://127.0.0.1:8000/video_feed"/>
+    </body>
+</html>
+"""
+
+frame_storage = None  # Variable to store frames from the client
+
 distance_sensor = DistanceSensor()
+
 
 class Action(BaseModel):
     action: str
     value: int = None
 
-@app.post("/control/")
-async def control_vehicle(action_data: Action):
-    action = action_data.action
-    value = action_data.value
+
+def gen_frames():
+    while True:
+        if frame_storage is not None:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_storage + b'\r\n')
+
+
+async def perform_action(websocket, action_data):
+    action = action_data.get("action")
+    value = action_data.get("value")
 
     if value is not None and not (0 <= value <= 100):
-        raise HTTPException(status_code=400, detail="Value must be in the range 0 to 100")
+        await websocket.send_text("Value must be in the range 0 to 100")
+        return
 
-    if action == "start":
-        vehicle_steering.start_vehicle()
-    elif action == "stop":
-        vehicle_steering.stop_vehicle()
-    elif action == "turn_left" and value is not None:
-        vehicle_steering.turn_vehicle_left(value)
-    elif action == "turn_right" and value is not None:
-        vehicle_steering.turn_vehicle_right(value)
-    elif action == "center":
-        vehicle_steering.center_steering()
-    elif action == "drive_forward" and value is not None:
-        # vehicle_steering.set_speed_for_left_motor(value)
-        vehicle_steering.drive_forward(value)
-    elif action == "drive_backward" and value is not None:
-        vehicle_steering.drive_backward(value)
-    elif action == "set_speed_for_right_motor" and value is not None:
-        vehicle_steering.set_speed_for_right_motor(value)
-    elif action == "set_speed_for_left_motor" and value is not None:
-        vehicle_steering.set_speed_for_left_motor(value)
+    action_handler, args = action_handlers.get(action, (None, ()))
+
+    if action_handler is not None:
+        if "value" in args:
+            action_handler(value)
+        else:
+            action_handler()
+        await websocket.send_text("Action performed successfully")
     else:
-        raise HTTPException(status_code=400, detail="Invalid action or missing value")
+        await websocket.send_text("Invalid action or missing value")
 
-    return {"message": "Action performed successfully"}
 
-@app.get("/get_distance/")
-async def get_distance():
-    distance = distance_sensor.measure_distance()
-    return Response(content=str(distance), media_type="text/html")
+@app.get("/")
+async def get():
+    return HTMLResponse(html)
+
+
+@app.get("/video_feed")
+async def video_feed():
+    return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.websocket("/distance")
+async def get_distance(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            distance = distance_sensor.measure_distance()
+            await websocket.send_text(str(distance))
+    except WebSocketDisconnect:
+        pass
+
+
+@app.websocket("/control")
+async def control_vehicle(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            action_data = json.loads(data)
+            await perform_action(websocket=websocket, action_data=action_data)
+    except WebSocketDisconnect:
+        pass
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    global frame_storage
+    try:
+        while True:
+            frame_data = await websocket.receive_bytes()
+            await websocket.send_text("data received")
+            if frame_data:
+                frame_storage = frame_data
+    except WebSocketDisconnect:
+        pass
