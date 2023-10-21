@@ -3,6 +3,7 @@ from board import SCL, SDA
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
+from threading import Lock
 
 import busio
 import json
@@ -17,7 +18,8 @@ app = FastAPI()
 
 i2c_bus = busio.I2C(SCL, SDA)
 steering = VehicleSteering(VehicleControl(i2c_bus=i2c_bus,
-                                          steering_pwm_controller=PCA9685(i2c_bus, address=vehicle_config.I2C_STEERING_PWM_CONTROLLER_ADDRESS),
+                                          steering_pwm_controller=PCA9685(
+                                              i2c_bus, address=vehicle_config.I2C_STEERING_PWM_CONTROLLER_ADDRESS),
                                           throttle_pwm_controller=PCA9685(i2c_bus, address=vehicle_config.I2C_THROTTLE_PWM_CONTROLLER_ADDRESS)))
 
 action_handlers = {
@@ -45,8 +47,6 @@ html = """
 </html>
 """
 
-frame_storage = None  # Variable to store frames from the client
-
 distance_sensor = DistanceSensor()
 
 
@@ -55,11 +55,23 @@ class Action(BaseModel):
     value: int = None
 
 
+class FrameStorage:
+    def __init__(self):
+        self.frame_data = None
+        self.frame_updated = False
+        self.lock = Lock()
+
+
+frame_storage = FrameStorage()
+
+
 def gen_frames():
     while True:
-        if frame_storage is not None:
+        if frame_storage.frame_updated:
+            with frame_storage.lock:
+                frame_storage.frame_updated = False
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_storage + b'\r\n')
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_storage.frame_data + b'\r\n')
 
 
 async def perform_action(websocket, action_data):
@@ -97,7 +109,7 @@ async def get_distance(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
             distance = distance_sensor.measure_distance()
             await websocket.send_text(str(distance))
     except WebSocketDisconnect:
@@ -116,15 +128,16 @@ async def control_vehicle(websocket: WebSocket):
         pass
 
 
-@app.websocket("/ws")
+@app.websocket("/frame_dispatcher")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    global frame_storage
     try:
         while True:
             frame_data = await websocket.receive_bytes()
             await websocket.send_text("data received")
             if frame_data:
-                frame_storage = frame_data
+                with frame_storage.lock:
+                    frame_storage.frame_data = frame_data
+                    frame_storage.frame_updated = True
     except WebSocketDisconnect:
         pass
