@@ -3,10 +3,10 @@ from board import SCL, SDA
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from threading import Lock
-
+import asyncio
 import busio
 import json
+import time
 
 from ultrasonic_hcsr04 import DistanceSensor
 from vehicle_control import VehicleControl
@@ -25,9 +25,9 @@ steering = VehicleSteering(VehicleControl(i2c_bus=i2c_bus,
 action_handlers = {
     "start": (steering.start_vehicle, ()),
     "stop": (steering.stop_vehicle, ()),
+    "center": (steering.center_steering, ()),
     "turn_left": (steering.turn_vehicle_left, ("value",)),
     "turn_right": (steering.turn_vehicle_right, ("value",)),
-    "center": (steering.center_steering, ()),
     "drive_forward": (steering.drive_forward, ("value",)),
     "drive_backward": (steering.drive_backward, ("value",)),
     "set_speed_for_right_motor": (steering.set_speed_for_right_motor, ("value",)),
@@ -59,8 +59,6 @@ class FrameStorage:
     def __init__(self):
         self.frame_data = None
         self.frame_updated = False
-        self.lock = Lock()
-
 
 frame_storage = FrameStorage()
 
@@ -68,8 +66,7 @@ frame_storage = FrameStorage()
 def gen_frames():
     while True:
         if frame_storage.frame_updated:
-            with frame_storage.lock:
-                frame_storage.frame_updated = False
+            frame_storage.frame_updated = False
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_storage.frame_data + b'\r\n')
 
@@ -109,7 +106,6 @@ async def get_distance(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            await websocket.receive_text()
             distance = distance_sensor.measure_distance()
             await websocket.send_text(str(distance))
     except WebSocketDisconnect:
@@ -135,9 +131,8 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             frame_data = await websocket.receive_bytes()
             await websocket.send_text("data received")
-            if frame_data:
-                with frame_storage.lock:
-                    frame_storage.frame_data = frame_data
-                    frame_storage.frame_updated = True
+            if frame_data: 
+                frame_storage.frame_data = frame_data
+                frame_storage.frame_updated = True
     except WebSocketDisconnect:
         pass

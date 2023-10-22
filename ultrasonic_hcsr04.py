@@ -1,6 +1,7 @@
 import RPi.GPIO as GPIO
 import time
-import threading
+import asyncio
+
 
 class DistanceSensor:
     def __init__(self):
@@ -13,21 +14,19 @@ class DistanceSensor:
         time.sleep(0.1)
         GPIO.output(self.PIN_TRIGGER, GPIO.LOW)
         time.sleep(0.1)
+        print("waiting for sensor to settle...")
+        time.sleep(2)
         self.distance = 0.0
-        self.lock = threading.Lock()
         self.update_frequency = 5  # Updates n times per second
-        self.update_thread = threading.Thread(target=self._update_distance)
-        self.update_thread.daemon = True
-        self.update_thread.start()
+        asyncio.create_task(self._update_distance())
 
-    def _update_distance(self):
+    async def _update_distance(self):
         while True:
-            distance = self._measure_distance()
-            with self.lock:
-                self.distance = distance
-            time.sleep(1 / self.update_frequency)
+            distance = await self._measure_distance()
+            self.distance = distance
+            await asyncio.sleep(1 / self.update_frequency)
 
-    def _measure_distance(self):
+    async def _measure_distance(self):
         GPIO.output(self.PIN_TRIGGER, GPIO.HIGH)
         time.sleep(0.00001)
         GPIO.output(self.PIN_TRIGGER, GPIO.LOW)
@@ -42,8 +41,7 @@ class DistanceSensor:
         return distance
 
     def measure_distance(self):
-        with self.lock:
-            return self.distance
+        return self.distance
 
     def cleanup(self):
         GPIO.cleanup()
