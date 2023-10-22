@@ -14,6 +14,8 @@ from vehicle_steering import VehicleSteering
 
 import vehicle_config
 
+from collections import defaultdict
+
 app = FastAPI()
 
 i2c_bus = busio.I2C(SCL, SDA)
@@ -34,18 +36,27 @@ action_handlers = {
     "set_speed_for_left_motor": (steering.set_speed_for_left_motor, ("value",)),
 }
 
+
+class FrameStorage:
+    def __init__(self):
+        self.frame_data = None
+        self.frame_updated = False
+
+
+video_frames = defaultdict(FrameStorage)
+
 html = """
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Video Stream</title>
+        <title>Video Streams</title>
     </head>
     <body>
-        <h1>Video Stream</h1>
-        <img id="video" width="640" height="368" src="http://127.0.0.1:8000/video_feed"/>
+        <h1>Video Streams</h1>
+        %s
     </body>
 </html>
-"""
+""" % "\n".join([f'<img id="video_{name}" width="640" height="368" src="/video_feed?name={name}"/>' for name in video_frames.keys()])
 
 distance_sensor = DistanceSensor()
 
@@ -55,20 +66,12 @@ class Action(BaseModel):
     value: int = None
 
 
-class FrameStorage:
-    def __init__(self):
-        self.frame_data = None
-        self.frame_updated = False
-
-frame_storage = FrameStorage()
-
-
-def gen_frames():
+def gen_frames(frame_name: str):
     while True:
-        if frame_storage.frame_updated:
-            frame_storage.frame_updated = False
+        if video_frames[frame_name].frame_updated:
+            video_frames[frame_name].frame_updated = False
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_storage.frame_data + b'\r\n')
+                   b'Content-Type: image/jpeg\r\n\r\n' + video_frames[frame_name].frame_data + b'\r\n')
 
 
 async def perform_action(websocket, action_data):
@@ -97,8 +100,11 @@ async def get():
 
 
 @app.get("/video_feed")
-async def video_feed():
-    return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+async def video_feed(name: str):
+    if name not in video_frames:
+        return "Video not found"
+
+    return StreamingResponse(gen_frames(name), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.websocket("/distance")
@@ -126,13 +132,20 @@ async def control_vehicle(websocket: WebSocket):
 
 @app.websocket("/frame_dispatcher")
 async def websocket_endpoint(websocket: WebSocket):
+    global html
     await websocket.accept()
     try:
         while True:
+            frame_title = await websocket.receive_text()
             frame_data = await websocket.receive_bytes()
             await websocket.send_text("data received")
-            if frame_data: 
-                frame_storage.frame_data = frame_data
-                frame_storage.frame_updated = True
+            if frame_title and frame_data:
+                video_frames[frame_title].frame_data = frame_data
+                video_frames[frame_title].frame_updated = True
+
+                if f'id="video_{frame_title}"' not in html:
+                    new_video_element = f'<div><h2>{frame_title}</h2><img id="video_{frame_title}" width="640" height="368" src="/video_feed?name={frame_title}"/></div>'
+                    html = html.replace(
+                        '</body>', f'{new_video_element}</body>')
     except WebSocketDisconnect:
         pass
