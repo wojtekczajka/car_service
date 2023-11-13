@@ -32,6 +32,7 @@ class DistanceSensor:
         GPIO.output(self.PIN_TRIGGER, GPIO.LOW)
 
         while GPIO.input(self.PIN_ECHO) == 0:
+            global pulse_start_time
             pulse_start_time = time.time()
         while GPIO.input(self.PIN_ECHO) == 1:
             pulse_end_time = time.time()

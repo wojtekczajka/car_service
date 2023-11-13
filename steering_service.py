@@ -1,12 +1,9 @@
 from adafruit_pca9685 import PCA9685
 from board import SCL, SDA
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-import asyncio
 import busio
-import json
-import time
 
 from ultrasonic_hcsr04 import DistanceSensor
 from vehicle_control import VehicleControl
@@ -23,7 +20,7 @@ steering = VehicleSteering(VehicleControl(i2c_bus=i2c_bus,
                                           steering_pwm_controller=PCA9685(
                                               i2c_bus, address=vehicle_config.I2C_STEERING_PWM_CONTROLLER_ADDRESS),
                                           throttle_pwm_controller=PCA9685(i2c_bus, address=vehicle_config.I2C_THROTTLE_PWM_CONTROLLER_ADDRESS)))
-
+steering.center_steering()
 action_handlers = {
     "start": (steering.start_vehicle, ()),
     "stop": (steering.stop_vehicle, ()),
@@ -66,12 +63,17 @@ class Action(BaseModel):
     value: int = None
 
 
+class Frame(BaseModel):
+    frame_title: str
+    frame_data: str
+
+
 def gen_frames(frame_name: str):
     while True:
         if video_frames[frame_name].frame_updated:
             video_frames[frame_name].frame_updated = False
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + video_frames[frame_name].frame_data + b'\r\n')
+                   b'Content-Type: image/base64\r\n\r\n' + video_frames[frame_name].frame_data + b'\r\n')
 
 
 async def perform_action(websocket, action_data):
@@ -106,46 +108,39 @@ async def video_feed(name: str):
 
     return StreamingResponse(gen_frames(name), media_type="multipart/x-mixed-replace; boundary=frame")
 
-
-@app.websocket("/distance")
-async def get_distance(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            distance = distance_sensor.measure_distance()
-            await websocket.send_text(str(distance))
-    except WebSocketDisconnect:
-        pass
+@app.get("/distance")
+async def get_distance():
+    return {"distance": distance_sensor.measure_distance()}
 
 
-@app.websocket("/control")
-async def control_vehicle(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_text()
-            action_data = json.loads(data)
-            await perform_action(websocket=websocket, action_data=action_data)
-    except WebSocketDisconnect:
-        pass
+@app.post("/control")
+async def control_vehicle(action_data: Action):
+    action = action_data.action
+    value = action_data.value
+
+    if value is not None and not (0 <= value <= 100):
+        raise HTTPException(status_code=404, detail="Value must be in the range 0 to 100")
+    
+    action_handler, args = action_handlers.get(action, (None, ()))
+
+    if action_handler is not None:
+        if "value" in args:
+            action_handler(value)
+        else:
+            action_handler()
+        return("Action performed successfully")
+    else:
+        raise HTTPException(status_code=404, detail="Invalid action or missing value")
 
 
-@app.websocket("/frame_dispatcher")
-async def websocket_endpoint(websocket: WebSocket):
+@app.post("/frame_dispatcher")
+async def dispatch_frame(frame: Frame):
     global html
-    await websocket.accept()
-    try:
-        while True:
-            frame_title = await websocket.receive_text()
-            frame_data = await websocket.receive_bytes()
-            await websocket.send_text("data received")
-            if frame_title and frame_data:
-                video_frames[frame_title].frame_data = frame_data
-                video_frames[frame_title].frame_updated = True
+    video_frames[frame.frame_title].frame_data = frame.frame_data
+    video_frames[frame.frame_title].frame_updated = True
 
-                if f'id="video_{frame_title}"' not in html:
-                    new_video_element = f'<div><h2>{frame_title}</h2><img id="video_{frame_title}" width="640" height="368" src="/video_feed?name={frame_title}"/></div>'
+    if f'id="video_{frame.frame_title}"' not in html:
+                    new_video_element = f'<div><h2>{frame.frame_title}</h2><img id="video_{frame.frame_title}" width="640" height="368" src="/video_feed?name={frame.frame_title}"/></div>'
                     html = html.replace(
                         '</body>', f'{new_video_element}</body>')
-    except WebSocketDisconnect:
-        pass
+    return {"detail": "ok"}
