@@ -1,6 +1,5 @@
 import busio
 
-from board import SCL, SDA
 from adafruit_pca9685 import PCA9685
 
 import vehicle_config

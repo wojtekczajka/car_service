@@ -17,7 +17,7 @@ class DistanceSensor:
         print("waiting for sensor to settle...")
         time.sleep(2)
         self.distance = 0.0
-        self.update_frequency = 5  # Updates n times per second
+        self.update_frequency = 5
         asyncio.create_task(self._update_distance())
 
     async def _update_distance(self):
@@ -49,10 +49,3 @@ class DistanceSensor:
 
     def __del__(self):
         self.cleanup()
-
-# Usage:
-# sensor = DistanceSensor()
-# while True:
-#     distance = sensor.measure_distance()
-#     print(f"Distance: {distance} cm")
-#     time.sleep(1)
